@@ -173,7 +173,7 @@ func main() {
 				Current:  current,
 			}
 			// Add location to database
-			InsertDataIntoCity(location, id)
+			InsertDataIntoCity(id, location)
 
 			// Add current to database
 			InsertDataIntoCurrent(id, current)
@@ -204,9 +204,15 @@ func main() {
 		}
 		// Check if city exists in DB
 		if city_id__err != sql.ErrNoRows {
+			// New uuid beacuse uuid does not exist
+			city_id = uuid.New()
 			response = FetchForecastDataForCityFromApi(city, Api_key, "3")
-			// InsertDataIntoCity()
-
+			// Insert city (location) from response city DB
+			InsertDataIntoCity(city_id, response.Location)
+			// Insert current weather from response current DB
+			InsertDataIntoCurrent(city_id, response.Current)
+			// Insert forecast weather from response current DB
+			InsertDataIntoForeCast(city_id, response.Forecast.Forecastday)
 		}
 
 		ctx.JSON(200, response)
@@ -262,7 +268,7 @@ func FetchForecastDataForCityFromApi(city string, ApiKey string, days string) We
 	return response
 }
 
-func InsertDataIntoCity(city LocationStruct, id uuid.UUID) {
+func InsertDataIntoCity(id uuid.UUID, city LocationStruct) {
 	// Add city to DB
 	_, err := Database.Exec(`INSERT INTO city (id, name, region, country, latitude, longitude, tz_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, city.Name, city.Region, city.Country, city.Latitude, city.Longitude, city.Tz_id)
 
