@@ -177,6 +177,7 @@ func main() {
 
 			// Add current to database
 			InsertDataIntoCurrent(id, current)
+
 			context.JSON(200, weatherResponse)
 			return
 		} else {
@@ -192,6 +193,7 @@ func main() {
 	router.GET("/forecast", func(ctx *gin.Context) {
 		var city string = ctx.Query("city")
 		var city_id uuid.UUID
+		var response WeatherResponseForForecast
 		// var forecast ForecastDayStruct
 
 		// Check DB to fetch city id
@@ -202,12 +204,12 @@ func main() {
 		}
 		// Check if city exists in DB
 		if city_id__err != sql.ErrNoRows {
+			response = FetchForecastDataForCityFromApi(city, Api_key, "3")
+			// InsertDataIntoCity()
 
 		}
-		miniResponse := FetchForecastDataForCityFromApi(city, Api_key, "3")
-		fmt.Println(miniResponse.Forecast)
 
-		ctx.JSON(200, miniResponse)
+		ctx.JSON(200, response)
 	})
 	router.Run(":8080")
 }
@@ -278,4 +280,17 @@ func InsertDataIntoCurrent(cityId uuid.UUID, current CurrentWeatherStruct) {
 		fmt.Println("An error occured while inserting data into city")
 		panic(err)
 	}
+}
+
+func InsertDataIntoForeCast(cityId uuid.UUID, forecast []ForecastDayContainerStruct) {
+	// Add current to DB
+	for _, day := range forecast {
+		_, err := Database.Exec(`INSERT INTO forecast (maxtemp_c, mintemp_c, temp_c, humidity, wind_mph, date, condition_text, condition_icon, date_epoch) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, day.Day.Maxtemp_c, day.Day.Mintemp_c, day.Day.Temp_c, day.Day.Humidity, day.Day.Wind_mph, day.Date, day.Day.Condition.Text, day.Day.Condition.Icon, day.DateEpoch)
+
+		if err != nil {
+			fmt.Println("An error occured while inserting forecast data into DB")
+			panic(err)
+		}
+	}
+
 }
