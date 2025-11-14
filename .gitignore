@@ -1,5 +1,8 @@
 *.env
 
 *.air.toml
-
+tmp
 ioio
+
+PRD.md
+TDD.md
