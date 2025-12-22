@@ -8,7 +8,10 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strconv"
 
@@ -76,6 +79,11 @@ var Database *sql.DB
 func main() {
 	ConnectDB()
 	var router *gin.Engine = gin.Default()
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println("could not access .env files")
+		return
+	}
 
 	router.GET("/forecast", func(context *gin.Context) {
 		// context.JSON(200, gin.H{"message": "Hello, world"})
@@ -98,11 +106,13 @@ func main() {
 			panic(err)
 		}
 		if found == false && err == nil {
-			context.JSON(404, gin.H{
-				"status":  404,
-				"message": "Could not find city in db",
-				"error":   "Not found",
-			})
+			// context.JSON(404, gin.H{
+			// 	"status":  404,
+			// 	"message": "Could not find city in db",
+			// 	"error":   "Not found",
+			// })
+			apiResponse, _, _ := fetchForecastDataFromAPI(city)
+			context.JSON(200, apiResponse)
 			return
 		}
 		response := FetchForecastDataFromDB(city)
@@ -136,6 +146,7 @@ func ConnectDB() {
 	// Databse connected successfully
 }
 
+// Checking if location exists in the database; if not fetch from api
 func CheckLocationInDB(city string) (int, bool, error) {
 	var cityId int
 	err := Database.QueryRow(`SELECT id FROM location WHERE name=$1`, city).Scan(&cityId)
@@ -195,4 +206,30 @@ func FetchForecastDataFromDB(cityID string) WeatherResponseForForecast {
 		Forecast: forecast,
 	}
 	return response
+}
+
+func fetchForecastDataFromAPI(cityName string) (WeatherResponseForForecast, bool, error) {
+	var apiKey string = os.Getenv("WEATHER_API_KEY")
+	var url string = fmt.Sprintf("http://api.weatherapi.com/v1/current.json?key=%s&q=%s", apiKey, cityName)
+	var response WeatherResponseForForecast
+	var location CityStruct
+	var current CurrentStruct
+	var forecast ForecastStruct
+	endpoint, err := http.Get(url)
+	if err != nil {
+		fmt.Println("An error ocurred while fetching data from API")
+	}
+	// fmt.Println(endpoint)
+	readData, readErr := io.ReadAll(endpoint.Body)
+	if readErr != nil {
+		fmt.Println(readErr)
+		response = WeatherResponseForForecast{
+			Location: location,
+			Current:  current,
+			Forecast: forecast,
+		}
+		return response, false, readErr
+	}
+	json.Unmarshal(readData, &response)
+	return response, true, nil
 }
