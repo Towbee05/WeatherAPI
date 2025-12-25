@@ -63,7 +63,7 @@ type ForecastDayArrStruct struct {
 type ForecastSingleDayStruct struct {
 	TempC      float32         `json:"avgtemp_c"`
 	MaxWindMph float32         `json:"maxwind_mph"`
-	Humidity   int             `json:"humidity"`
+	Humidity   int             `json:"avghumidity"`
 	Condition  ConditionStruct `json:"condition"`
 }
 
@@ -112,6 +112,15 @@ func main() {
 			// 	"error":   "Not found",
 			// })
 			apiResponse, _, _ := fetchForecastDataFromAPI(city)
+			_, err := saveForecastDataToDatabase(apiResponse)
+			if err != nil {
+				context.JSON(500, gin.H{
+					"status":  500,
+					"message": err,
+					"error":   "Internal Server Error",
+				})
+				return
+			}
 			context.JSON(200, apiResponse)
 			return
 		}
@@ -210,7 +219,7 @@ func FetchForecastDataFromDB(cityID string) WeatherResponseForForecast {
 
 func fetchForecastDataFromAPI(cityName string) (WeatherResponseForForecast, bool, error) {
 	var apiKey string = os.Getenv("WEATHER_API_KEY")
-	var url string = fmt.Sprintf("http://api.weatherapi.com/v1/current.json?key=%s&q=%s", apiKey, cityName)
+	var url string = fmt.Sprintf("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=3", apiKey, cityName)
 	var response WeatherResponseForForecast
 	var location CityStruct
 	var current CurrentStruct
@@ -232,4 +241,32 @@ func fetchForecastDataFromAPI(cityName string) (WeatherResponseForForecast, bool
 	}
 	json.Unmarshal(readData, &response)
 	return response, true, nil
+}
+
+// Function to save forecast data to database
+func saveForecastDataToDatabase(data WeatherResponseForForecast) (int, error) {
+	location := data.Location
+	current := data.Current
+	forecastDay := data.Forecast.ForecastDay
+
+	_, err := Database.Exec("INSERT INTO location (name, region, country, latitude, longitude, tz_id) VALUES ($1, $2, $3, $4, $5, $6)", location.Name, location.Region, location.Country, location.Latitude, location.Longitude, location.TZ_ID)
+	if err != nil {
+		fmt.Println("An error occured while adding location to db")
+		return 0, err
+	}
+
+	cityId, _, _ := CheckLocationInDB(location.Name)
+	_, currErr := Database.Exec("INSERT INTO current (city_id, last_updated, temp_c, condition_text, condition_icon, wind_mph, wind_degree, pressure_in, humidity, wind_dir) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)", cityId, current.LastUpdated, current.TempC, current.Condition.Text, current.Condition.Icon, current.WindMph, current.WindDegree, current.PressureIn, current.Humidity, current.WindDirection)
+	if currErr != nil {
+		fmt.Println("An error occured while adding current to db")
+		return 0, currErr
+	}
+	for _, value := range forecastDay {
+		_, forecastErr := Database.Exec("INSERT INTO forecast ( city_id, date, date_epoch, temperature, wind_mph, humidity, condition_text, condition_icon) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", cityId, value.Date, value.DateEpoch, value.Day.TempC, value.Day.MaxWindMph, value.Day.Humidity, value.Day.Condition.Text, value.Day.Condition.Icon)
+		if forecastErr != nil {
+			fmt.Println("An error occured while forecast location to db")
+			return 0, forecastErr
+		}
+	}
+	return 1, nil
 }
