@@ -67,6 +67,11 @@ type ForecastSingleDayStruct struct {
 	Condition  ConditionStruct `json:"condition"`
 }
 
+type WeatherResponseForCurrent struct {
+	Location CityStruct    `json:"location"`
+	Current  CurrentStruct `json:"current"`
+}
+
 type WeatherResponseForForecast struct {
 	Location CityStruct     `json:"location"`
 	Current  CurrentStruct  `json:"current"`
@@ -84,7 +89,48 @@ func main() {
 		fmt.Println("could not access .env files")
 		return
 	}
-
+	// Current URL
+	router.GET("/current", func(context *gin.Context) {
+		city := context.Query("city")
+		if city == "" || city == " " {
+			context.JSON(400, gin.H{
+				"status":  400,
+				"message": "Please provide a city name",
+				"error":   "Bad Request",
+			})
+			return
+		}
+		_, found, err := CheckLocationInDB(city)
+		if err != nil {
+			context.JSON(404, gin.H{
+				"status":  500,
+				"message": err,
+				"error":   "Internal server error",
+			})
+		}
+		if found == false && err == nil {
+			apiResponse, _, _ := fetchForecastDataFromAPI(city)
+			_, err := saveForecastDataToDatabase(apiResponse)
+			if err != nil {
+				context.JSON(500, gin.H{
+					"status":  500,
+					"message": err,
+					"error":   "Internal Server Error",
+				})
+				return
+			}
+			data := WeatherResponseForCurrent{
+				Location: apiResponse.Location,
+				Current:  apiResponse.Current,
+			}
+			context.JSON(200, data)
+			return
+		}
+		response := FetchCurrentDataFromDB(city)
+		fmt.Println(response)
+		context.JSON(200, response)
+	})
+	// Forecast URL
 	router.GET("/forecast", func(context *gin.Context) {
 		// context.JSON(200, gin.H{"message": "Hello, world"})
 		city := context.Query("city")
@@ -103,7 +149,6 @@ func main() {
 				"message": "Internal server error",
 				"error":   "Internal server error",
 			})
-			panic(err)
 		}
 		if found == false && err == nil {
 			// context.JSON(404, gin.H{
@@ -169,6 +214,39 @@ func CheckLocationInDB(city string) (int, bool, error) {
 		return 0, false, err
 	}
 	return cityId, true, nil
+
+}
+
+func FetchCurrentDataFromDB(cityID string) WeatherResponseForCurrent {
+	var location CityStruct
+	var current CurrentStruct
+
+	// SELECT l.id, l.name, l.region, l.country, l.latitude, l.longitude, l.tz_id, id, city_id, last_updated, temp_c, condition_text, condition_icon, wind_mph, wind_degree, pressure_in, humidity FROM location l
+	// JOIN current c ON current.city_id=location.id
+	// WHERE name=$1
+	locationErr := Database.QueryRow(`SELECT id, name, region, country, latitude, longitude, tz_id FROM location WHERE name=$1`, cityID).Scan(
+		&location.ID, &location.Name, &location.Region, &location.Country, &location.Latitude, &location.Longitude, &location.TZ_ID,
+	)
+	currentErr := Database.QueryRow(`SELECT id, city_id, last_updated, temp_c, condition_text, condition_icon, wind_mph, wind_degree, pressure_in, humidity FROM current WHERE city_id=$1`, location.ID).Scan(
+		&current.ID, &current.CityID, &current.LastUpdated, &current.TempC, &current.Condition.Text, &current.Condition.Icon, &current.WindMph, &current.WindDegree, &current.PressureIn, &current.Humidity,
+	)
+	if locationErr == sql.ErrNoRows {
+		fmt.Println("City does not exist in DB: FetchForecastDataFromDB")
+	}
+	if locationErr != nil {
+		fmt.Println("An error occured while fetching from DB: FetchForecastDataFromDB")
+	}
+	if currentErr == sql.ErrNoRows {
+		fmt.Println("City does not exist in DB: FetchForecastDataFromDB")
+	}
+	if currentErr != nil {
+		fmt.Println("An error occured while fetching from DB: FetchForecastDataFromDB")
+	}
+	var response = WeatherResponseForCurrent{
+		Location: location,
+		Current:  current,
+	}
+	return response
 
 }
 
