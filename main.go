@@ -171,6 +171,14 @@ func main() {
 			return
 		}
 		// Check item in Cache
+		var cacheKey = fmt.Sprintf("%sForecast", city)
+		itemData, hit := getItemFromCache(*redisClient, cacheKey)
+		var data WeatherResponseForForecast
+		if hit {
+			json.Unmarshal([]byte(itemData), &data)
+			context.JSON(200, data)
+			return
+		}
 		_, found, err := CheckLocationInDB(city)
 		if err != nil {
 			context.JSON(404, gin.H{
@@ -194,6 +202,7 @@ func main() {
 			return
 		}
 		response := FetchForecastDataFromDB(city)
+		setItemToCache(*redisClient, cacheKey, nil, &response)
 		context.JSON(200, response)
 	})
 
