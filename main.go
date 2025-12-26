@@ -7,6 +7,7 @@ package main
 // TODO 5. Ask Chat if I need to run "defer db.Close()" on opening connection to db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
 type CityStruct struct {
@@ -80,14 +82,29 @@ type WeatherResponseForForecast struct {
 
 // Database global variable
 var Database *sql.DB
+var ctx = context.Background()
 
 func main() {
 	ConnectDB()
+	// Connect to redis cache for in-memory storage
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+		Protocol: 2,
+	})
 	var router *gin.Engine = gin.Default()
 	err := godotenv.Load()
 	if err != nil {
 		fmt.Println("could not access .env files")
 		return
+	}
+	// Engine is running now, check if the redis server is reciving requests
+	pong, err := redisClient.Ping(ctx).Result()
+	if err != nil {
+		fmt.Println("Could not connect to redis server")
+	} else {
+		fmt.Printf("Connected to redis server: %s", pong)
 	}
 	// Current URL
 	router.GET("/current", func(context *gin.Context) {
@@ -100,9 +117,19 @@ func main() {
 			})
 			return
 		}
+
+		// Check item in cache first
+		itemData, hit := getItemFromCache(*redisClient, city)
+		var data WeatherResponseForCurrent
+		if hit {
+			json.Unmarshal([]byte(itemData), &data)
+			context.JSON(200, data)
+			return
+		}
+
 		_, found, err := CheckLocationInDB(city)
 		if err != nil {
-			context.JSON(404, gin.H{
+			context.JSON(500, gin.H{
 				"status":  500,
 				"message": err,
 				"error":   "Internal server error",
@@ -123,11 +150,12 @@ func main() {
 				Location: apiResponse.Location,
 				Current:  apiResponse.Current,
 			}
+			setItemToCache(*redisClient, city, &data, nil)
 			context.JSON(200, data)
 			return
 		}
 		response := FetchCurrentDataFromDB(city)
-		fmt.Println(response)
+		setItemToCache(*redisClient, city, &response, nil)
 		context.JSON(200, response)
 	})
 	// Forecast URL
@@ -142,6 +170,7 @@ func main() {
 			})
 			return
 		}
+		// Check item in Cache
 		_, found, err := CheckLocationInDB(city)
 		if err != nil {
 			context.JSON(404, gin.H{
@@ -151,11 +180,6 @@ func main() {
 			})
 		}
 		if found == false && err == nil {
-			// context.JSON(404, gin.H{
-			// 	"status":  404,
-			// 	"message": "Could not find city in db",
-			// 	"error":   "Not found",
-			// })
 			apiResponse, _, _ := fetchForecastDataFromAPI(city)
 			_, err := saveForecastDataToDatabase(apiResponse)
 			if err != nil {
@@ -170,7 +194,6 @@ func main() {
 			return
 		}
 		response := FetchForecastDataFromDB(city)
-		fmt.Println(response)
 		context.JSON(200, response)
 	})
 
@@ -220,10 +243,6 @@ func CheckLocationInDB(city string) (int, bool, error) {
 func FetchCurrentDataFromDB(cityID string) WeatherResponseForCurrent {
 	var location CityStruct
 	var current CurrentStruct
-
-	// SELECT l.id, l.name, l.region, l.country, l.latitude, l.longitude, l.tz_id, id, city_id, last_updated, temp_c, condition_text, condition_icon, wind_mph, wind_degree, pressure_in, humidity FROM location l
-	// JOIN current c ON current.city_id=location.id
-	// WHERE name=$1
 	locationErr := Database.QueryRow(`SELECT id, name, region, country, latitude, longitude, tz_id FROM location WHERE name=$1`, cityID).Scan(
 		&location.ID, &location.Name, &location.Region, &location.Country, &location.Latitude, &location.Longitude, &location.TZ_ID,
 	)
@@ -247,7 +266,6 @@ func FetchCurrentDataFromDB(cityID string) WeatherResponseForCurrent {
 		Current:  current,
 	}
 	return response
-
 }
 
 func FetchForecastDataFromDB(cityID string) WeatherResponseForForecast {
@@ -255,9 +273,6 @@ func FetchForecastDataFromDB(cityID string) WeatherResponseForForecast {
 	var current CurrentStruct
 	var forecast ForecastStruct
 
-	// SELECT l.id, l.name, l.region, l.country, l.latitude, l.longitude, l.tz_id, id, city_id, last_updated, temp_c, condition_text, condition_icon, wind_mph, wind_degree, pressure_in, humidity FROM location l
-	// JOIN current c ON current.city_id=location.id
-	// WHERE name=$1
 	locationErr := Database.QueryRow(`SELECT id, name, region, country, latitude, longitude, tz_id FROM location WHERE name=$1`, cityID).Scan(
 		&location.ID, &location.Name, &location.Region, &location.Country, &location.Latitude, &location.Longitude, &location.TZ_ID,
 	)
@@ -347,4 +362,30 @@ func saveForecastDataToDatabase(data WeatherResponseForForecast) (int, error) {
 		}
 	}
 	return 1, nil
+}
+
+// Function to retrieve item from the cache
+func getItemFromCache(client redis.Client, key string) (string, bool) {
+	value, err := client.Get(ctx, key).Result()
+	if err != nil {
+		return "An error occured while getting data from cache", false
+	} else {
+		return value, true
+	}
+}
+
+func setItemToCache(client redis.Client, key string, current *WeatherResponseForCurrent, forecast *WeatherResponseForForecast) string {
+	var marshalledData any
+	if current != nil {
+		marshalledData, _ = json.Marshal(current)
+	}
+	if forecast != nil {
+		marshalledData, _ = json.Marshal(forecast)
+	}
+	err := client.Set(ctx, key, marshalledData, 0)
+	if err != nil {
+		return "An error occured while setting data to cache"
+	} else {
+		return "Item set to cache"
+	}
 }
