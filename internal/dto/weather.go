@@ -1,25 +1,15 @@
-package main
-
-// TODO 1. Construct structs
-// TODO 2. Check db for city
-// TODO 3. If city is not in db or error was returned while searching db jump to step 5
-// TODO 4. Return city from API
-// TODO 5. Ask Chat if I need to run "defer db.Close()" on opening connection to db
+package dto
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 
-	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
-	"github.com/redis/go-redis/v9"
+	"github.com/Towbee05/weather-service/internal/db"
+	// main "github.com/Towbee05/weather-service/cmd/api"
 )
 
 type CityStruct struct {
@@ -80,157 +70,7 @@ type WeatherResponseForForecast struct {
 	Forecast ForecastStruct `json:"forecast"`
 }
 
-// Database global variable
-var Database *sql.DB
-var ctx = context.Background()
-
-func main() {
-	ConnectDB()
-	// Connect to redis cache for in-memory storage
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "",
-		DB:       0,
-		Protocol: 2,
-	})
-	var router *gin.Engine = gin.Default()
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Println("could not access .env files")
-		return
-	}
-	// Engine is running now, check if the redis server is reciving requests
-	pong, err := redisClient.Ping(ctx).Result()
-	if err != nil {
-		fmt.Println("Could not connect to redis server")
-	} else {
-		fmt.Printf("Connected to redis server: %s", pong)
-	}
-	// Current URL
-	router.GET("/current", func(context *gin.Context) {
-		city := context.Query("city")
-		if city == "" || city == " " {
-			context.JSON(400, gin.H{
-				"status":  400,
-				"message": "Please provide a city name",
-				"error":   "Bad Request",
-			})
-			return
-		}
-
-		// Check item in cache first
-		itemData, hit := getItemFromCache(*redisClient, city)
-		var data WeatherResponseForCurrent
-		if hit {
-			json.Unmarshal([]byte(itemData), &data)
-			context.JSON(200, data)
-			return
-		}
-
-		_, found, err := CheckLocationInDB(city)
-		if err != nil {
-			context.JSON(500, gin.H{
-				"status":  500,
-				"message": err,
-				"error":   "Internal server error",
-			})
-		}
-		if found == false && err == nil {
-			apiResponse, _, _ := fetchForecastDataFromAPI(city)
-			_, err := saveForecastDataToDatabase(apiResponse)
-			if err != nil {
-				context.JSON(500, gin.H{
-					"status":  500,
-					"message": err,
-					"error":   "Internal Server Error",
-				})
-				return
-			}
-			data := WeatherResponseForCurrent{
-				Location: apiResponse.Location,
-				Current:  apiResponse.Current,
-			}
-			setItemToCache(*redisClient, city, &data, nil)
-			context.JSON(200, data)
-			return
-		}
-		response := FetchCurrentDataFromDB(city)
-		setItemToCache(*redisClient, city, &response, nil)
-		context.JSON(200, response)
-	})
-	// Forecast URL
-	router.GET("/forecast", func(context *gin.Context) {
-		// context.JSON(200, gin.H{"message": "Hello, world"})
-		city := context.Query("city")
-		if city == "" || city == " " {
-			context.JSON(400, gin.H{
-				"status":  400,
-				"message": "Please provide a city name",
-				"error":   "Bad Request",
-			})
-			return
-		}
-		// Check item in Cache
-		var cacheKey = fmt.Sprintf("%sForecast", city)
-		itemData, hit := getItemFromCache(*redisClient, cacheKey)
-		var data WeatherResponseForForecast
-		if hit {
-			json.Unmarshal([]byte(itemData), &data)
-			context.JSON(200, data)
-			return
-		}
-		_, found, err := CheckLocationInDB(city)
-		if err != nil {
-			context.JSON(404, gin.H{
-				"status":  500,
-				"message": "Internal server error",
-				"error":   "Internal server error",
-			})
-		}
-		if found == false && err == nil {
-			apiResponse, _, _ := fetchForecastDataFromAPI(city)
-			_, err := saveForecastDataToDatabase(apiResponse)
-			if err != nil {
-				context.JSON(500, gin.H{
-					"status":  500,
-					"message": err,
-					"error":   "Internal Server Error",
-				})
-				return
-			}
-			context.JSON(200, apiResponse)
-			return
-		}
-		response := FetchForecastDataFromDB(city)
-		setItemToCache(*redisClient, cacheKey, nil, &response)
-		context.JSON(200, response)
-	})
-
-	router.Run(":8080")
-}
-
-// Function to connect to database
-func ConnectDB() {
-	if err := godotenv.Load(); err != nil {
-		fmt.Println("Error occured while trying to load .env file")
-	}
-	db_host := os.Getenv("DB_HOST")
-	db_port, _ := strconv.Atoi(os.Getenv("DB_PORT"))
-	db_user := os.Getenv("DB_USER")
-	db_name := os.Getenv("DB_NAME")
-	db_password := os.Getenv("DB_PASSWORD")
-
-	var uri string = fmt.Sprintf("host=%s port=%d user=%s dbname=%s password=%s sslmode=disable", db_host, db_port, db_user, db_name, db_password)
-
-	db, err := sql.Open("postgres", uri)
-	if err != nil {
-		fmt.Println("Error occured while connecting to db")
-		panic(err)
-	}
-	Database = db
-	fmt.Println("Database Connected Successfully")
-	// Databse connected successfully
-}
+var Database *sql.DB = db.ConnectDB()
 
 // Checking if location exists in the database; if not fetch from api
 func CheckLocationInDB(city string) (int, bool, error) {
@@ -246,7 +86,6 @@ func CheckLocationInDB(city string) (int, bool, error) {
 		return 0, false, err
 	}
 	return cityId, true, nil
-
 }
 
 func FetchCurrentDataFromDB(cityID string) WeatherResponseForCurrent {
@@ -319,34 +158,8 @@ func FetchForecastDataFromDB(cityID string) WeatherResponseForForecast {
 	return response
 }
 
-func fetchForecastDataFromAPI(cityName string) (WeatherResponseForForecast, bool, error) {
-	var apiKey string = os.Getenv("WEATHER_API_KEY")
-	var url string = fmt.Sprintf("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=3", apiKey, cityName)
-	var response WeatherResponseForForecast
-	var location CityStruct
-	var current CurrentStruct
-	var forecast ForecastStruct
-	endpoint, err := http.Get(url)
-	if err != nil {
-		fmt.Println("An error ocurred while fetching data from API")
-	}
-	// fmt.Println(endpoint)
-	readData, readErr := io.ReadAll(endpoint.Body)
-	if readErr != nil {
-		fmt.Println(readErr)
-		response = WeatherResponseForForecast{
-			Location: location,
-			Current:  current,
-			Forecast: forecast,
-		}
-		return response, false, readErr
-	}
-	json.Unmarshal(readData, &response)
-	return response, true, nil
-}
-
 // Function to save forecast data to database
-func saveForecastDataToDatabase(data WeatherResponseForForecast) (int, error) {
+func SaveForecastDataToDatabase(data WeatherResponseForForecast) (int, error) {
 	location := data.Location
 	current := data.Current
 	forecastDay := data.Forecast.ForecastDay
@@ -373,28 +186,28 @@ func saveForecastDataToDatabase(data WeatherResponseForForecast) (int, error) {
 	return 1, nil
 }
 
-// Function to retrieve item from the cache
-func getItemFromCache(client redis.Client, key string) (string, bool) {
-	value, err := client.Get(ctx, key).Result()
+func FetchForecastDataFromAPI(cityName string) (WeatherResponseForForecast, bool, error) {
+	var apiKey string = os.Getenv("WEATHER_API_KEY")
+	var url string = fmt.Sprintf("http://api.weatherapi.com/v1/forecast.json?key=%s&q=%s&days=3", apiKey, cityName)
+	var response WeatherResponseForForecast
+	var location CityStruct
+	var current CurrentStruct
+	var forecast ForecastStruct
+	endpoint, err := http.Get(url)
 	if err != nil {
-		return "An error occured while getting data from cache", false
-	} else {
-		return value, true
+		fmt.Println("An error ocurred while fetching data from API")
 	}
-}
-
-func setItemToCache(client redis.Client, key string, current *WeatherResponseForCurrent, forecast *WeatherResponseForForecast) string {
-	var marshalledData any
-	if current != nil {
-		marshalledData, _ = json.Marshal(current)
+	// fmt.Println(endpoint)
+	readData, readErr := io.ReadAll(endpoint.Body)
+	if readErr != nil {
+		fmt.Println(readErr)
+		response = WeatherResponseForForecast{
+			Location: location,
+			Current:  current,
+			Forecast: forecast,
+		}
+		return response, false, readErr
 	}
-	if forecast != nil {
-		marshalledData, _ = json.Marshal(forecast)
-	}
-	err := client.Set(ctx, key, marshalledData, 0)
-	if err != nil {
-		return "An error occured while setting data to cache"
-	} else {
-		return "Item set to cache"
-	}
+	json.Unmarshal(readData, &response)
+	return response, true, nil
 }
